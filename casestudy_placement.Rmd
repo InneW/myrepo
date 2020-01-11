@@ -1,0 +1,1175 @@
+---
+title: "Case study to show fuzzy technique for the standardisation of layers"
+author: "Inne Withouck"
+date: "05/12/2019"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Loading the data and packages
+
+```{r check version and set wd,echo=F,include=F}
+version
+setwd("~/IW/Rlab_IW")
+```
+
+## Libraries
+```{r prepping libs, message=FALSE}
+library(sf)
+library(tmap)
+library(raster)
+library(gatepoints)
+library(colorRamps)
+library(classInt)
+library(ggplot2)
+library(grid)
+library(plyr)
+library(dplyr)
+library(rgdal)
+library(RColorBrewer)
+```
+## Base layers
+```{r loading the base layers}
+#North SORER coast
+northcoast.sf<-st_read("eucoast_EPSG4326_1_2.shp")
+#North SORER EEZ
+northeez.sf<-st_read("EEZ_renewables_poly_1_2.shp")
+```
+## Layers for the opportunities and constraints analysis (OCA)
+### Objective 1
+```{r layers for objective 1}
+#wind
+wind.sf<-st_read("Wind.shp")
+#seabed
+seabed.sf<-st_read("250koffshore_seabed_sed_Proj.shp")
+```
+### Objective 2
+#### Raster files
+```{r fisheries layers for objective 2}
+#static (static nephrops was removed because it doesn't occur in north sorer region)
+lobster0913.r<-raster("lobster_join_2009_13_portRemoved_WGS_hselect_div11_kde1.tif")
+lobster0913.r
+staticdem0913.r<-raster("demersal_stat_join_2009_13_portRemoved_WGS_hselect_div11_kde1.tif")
+staticdem0913.r
+crab0913.r<-raster("crab_join_2009_13_portRemoved_WGS_hselect_div11_kde1.tif")
+crab0913.r
+```
+#### ADF file for mobile fisheries mean
+```{r fisheries layers for objective 2, adf file,echo=TRUE}
+dpath<-"~/IW/Rlab_IW/mean13_17_v2/hdr.adf"
+meanmobile_v2<-raster(dpath)
+meanmobile_v2
+```
+### Objective 3
+For the leisure activities, the raster was used that includes all activities combined (```.tif``` file)
+```{r objective 3}
+#all_recreation activities
+allactivities.r<-raster("ALL_Activites_combined_INT_2.tif")
+allactivities.r
+```
+### Objective 4
+```{r objective 4 input layers}
+#bird collision risk breeding season
+birdcollision.sf<-st_read("B_CollisionWGS84.shp")
+# cetacean distribution
+cetaceans.sf<-st_read("Cetacean_original_w_names_WGS84.shp")
+```
+
+# Match projections
+```{r check projections}
+st_crs(northcoast.sf)
+st_crs(northeez.sf)
+st_crs(wind.sf)
+st_crs(seabed.sf)
+st_crs(lobster0913.r)
+st_crs(staticdem0913.r)
+st_crs(crab0913.r)
+st_crs(allactivities.r)
+st_crs(meanmobile_v2)
+```
+
+It looks like one of the layers does not have the same projection as the rest so it will need to be transformed (the layer for wind resource)
+```{r project wind layer}
+st_crs(wind.sf)
+wind.sf_EPSG4326<-st_transform(x=wind.sf,crs="+proj=longlat +datum=WGS84 +no_defs")
+```
+
+# Crop to North SORER region 
+North SORER region was defined with the following: xmin=-5.289,ymin=58.483,xmax=3.164,ymax=64.838. Some layers were already clipped in mapshaper and then used as masks.
+
+## Vector files
+To clip vector files, they were first converted from an ```sf``` object to a SpatialPointsDataFrame or SpatialPolygonsDataFrame object. Then, the ```intersect()``` function could be used. Afterwards, the objects can be converted back to ```sf``` objects.
+
+### 1. Convert to ```Spatial``` objects
+```{r clip to north eez vector}
+birdcollision_spatial<-as(birdcollision.sf,"Spatial")
+cetaceans_spatial<-as(cetaceans.sf,"Spatial")
+northeez_spatial<-as(northeez.sf,"Spatial")
+seabed_spatial<-as(seabed.sf,"Spatial")
+wind_spatial<-as(wind.sf_EPSG4326,"Spatial")
+```
+
+### 2. Apply the ```intersect``` function
+```{r clip to north eez vector step2}
+northbird_spatial<-raster::intersect(x=birdcollision_spatial,y=northeez_spatial)
+northcetac_spatial<-raster::intersect(x=cetaceans_spatial,y=northeez_spatial)
+northseabed_spatial<-raster::intersect(x=seabed_spatial,y=northeez_spatial)
+northwind_spatial<-raster::intersect(x=wind_spatial,y=northeez_spatial)
+```
+
+### 3. Convert back to ```sf``` object
+```{r clip to north eez vector step 3}
+northbird.sf<-st_as_sf(northbird_spatial)
+northwhale.sf<-st_as_sf(northcetac_spatial)
+northseabed.sf<-st_as_sf(northseabed_spatial)
+northwind.sf<-st_as_sf(northwind_spatial)
+```
+
+## Raster files
+For raster files, the ```crop()``` function can be used.
+```{r clip to north eez raster}
+north_lobster0913<-crop(x=lobster0913.r,y=northeez.sf)
+north_staticdem0913<-crop(x=staticdem0913.r,y=northeez.sf)
+north_crab0913<-crop(x=crab0913.r,y=northeez.sf)
+north_allacts<-crop(x=allactivities.r,y=northeez.sf)
+north_meanmobile<-crop(x=meanmobile_v2,y=northeez.sf)
+```
+
+# Preparing the layers per objective
+## Obj 1
+For the first objective, the wind speed layer needs to be converted from a vector to a raster.
+
+```{r rasterizing layers obj1}
+windmap_vector<-tm_shape(northwind.sf)+tm_fill("AN_WS_100m",style="cont",title="Wind speed (m/s)",legend.reverse = T)+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(aes.palette = list(seq = "-YlOrBr"))
+
+northwind.prepr<-raster(as(northwind.sf, "Spatial"),ncols=154,nrows=80)
+
+northwind.r<-rasterize(as(northwind.sf,"Spatial"),northwind.prepr,progress="text",field="AN_WS_100m")
+
+windmap_raster<-tm_shape(northwind.r)+tm_raster(style="cont",title="Wind speed (m/s)",legend.reverse=T)+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(aes.palette = list(seq = "-YlOrBr"))
+
+
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(1,2)))
+print(windmap_vector,vp=viewport(layout.pos.row=1,layout.pos.col=1))
+print(windmap_raster,vp=viewport(layout.pos.row=1,layout.pos.col=2))
+```
+
+## Obj 2:Preparing the fisheries layers
+### Static fisheries
+The different types of static fisheries present in the North SORER region will be combined into one raster. For this, the properties of the rasters need to match first.
+
+#### Match extent
+```{r make one raster layer for the three types of static fishing}
+extent(north_lobster0913)
+extent(north_staticdem0913)
+extent(north_crab0913)
+north_lobster0913_ext<-extend(north_lobster0913,north_staticdem0913)
+north_crab0913_ext<-extend(north_crab0913,north_staticdem0913)
+```
+
+#### Match resolution
+In order to avoid artefacts, before using the ```resample``` function to match the resolution of the three rasters, the ```NA``` values are converted to ```0```'s. 
+```{r make one raster layer for the three types of static fishing convert na20}
+#Lobster
+north_lobster0913_extNA20<-north_lobster0913_ext
+north_lobster0913_extNA20[is.na(north_lobster0913_extNA20)]<-0
+#Crab
+north_crab0913_extNA20<-north_crab0913_ext
+north_crab0913_extNA20[is.na(north_crab0913_extNA20)]<-0
+#Static demersal
+north_staticdem0913_NA20<-north_staticdem0913
+north_staticdem0913_NA20[is.na(north_staticdem0913_NA20)]<-0
+```
+
+Using the raster files without ```NA``` values the rasters can now be resampled.
+
+```{r now match the resolution obj2}
+#resolution needs to match
+res(north_lobster0913)
+res(north_staticdem0913)
+res(north_crab0913)
+
+north_staticdem0913_NA20res1<-resample(x=north_staticdem0913_NA20,y=north_lobster0913_extNA20,method="bilinear")
+north_crab0913_extNA20res1<-resample(x=north_crab0913_extNA20,y=north_lobster0913_extNA20,method="bilinear")
+
+res(north_lobster0913_extNA20)
+res(north_staticdem0913_NA20res1)
+res(north_crab0913_extNA20res1)
+```
+
+#### Adding up the layers together to form one raster
+Once the properties of the rasters match they can simply be added together. However, the ```resample``` function (used to match the resolution) can sometimes give negative values so this is corrected for in the code below.
+
+```{r now join the static fisheries layers together}
+#joining the static fisheries layers after matching the properties of the rasters:
+north_static<-north_lobster0913_extNA20+north_staticdem0913_NA20res1+north_crab0913_extNA20res1
+
+#an error appread that some values were negative so this was further explored
+minValue(north_static)
+minValue(north_lobster0913)
+minValue(north_crab0913)
+minValue(north_staticdem0913)
+minValue(north_staticdem0913_NA20)
+minValue(north_lobster0913_extNA20)
+minValue(north_staticdem0913_NA20res1)
+values(north_staticdem0913_NA20res1)[values(north_staticdem0913_NA20res1)<0]=0
+minValue(north_crab0913_extNA20res1)
+
+#doing the join again to remove negative numbers
+north_static<-north_lobster0913_extNA20+north_staticdem0913_NA20res1+north_crab0913_extNA20res1
+
+```
+
+The input maps as well as the resulting combined map of all three types of static fisheries can be seen in the map below:
+```{r visualising the combination of the raster layers for static fisheries}
+lobstermap<-tm_shape(north_lobster0913)+tm_raster(style="cont",showNA = T,colorNA = "grey",title="lobster")+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette = list(seq = "YlOrBr"))
+
+demmap<-tm_shape(north_staticdem0913)+tm_raster(style="cont",showNA = T,colorNA = "grey",title="demersal")+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette = list(seq = "YlOrBr"))
+
+crabmap<-tm_shape(north_crab0913)+tm_raster(style="cont",showNA = T,colorNA = "grey",title="crab")+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette = list(seq = "YlOrBr"))
+
+combomap<-tm_shape(north_static)+tm_raster(style="cont",title="Static fishing intensity",legend.reverse=T)+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette = list(seq = "YlOrBr"))
+
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(2,3)))
+
+print(lobstermap,vp=viewport(layout.pos.row=1,layout.pos.col=1))
+print(demmap,vp=viewport(layout.pos.row=1,layout.pos.col=2))
+print(crabmap,vp=viewport(layout.pos.row=1,layout.pos.col=3))
+print(combomap,vp=viewport(layout.pos.row=2,layout.pos.col=1))
+```
+
+## Objective 4:
+The bird and cetacean layers are converted from vector to raster files.
+```{r convert bird and marine mammal files to raster}
+northbird.emptr<-raster(as(northbird.sf, "Spatial"),ncols=154,nrows=80)
+northbird.r<-rasterize(as(northbird.sf,"Spatial"),northbird.emptr,progress="text",field="sum_risk")
+
+northwhale.emptr<-raster(as(northwhale.sf, "Spatial"),ncols=154,nrows=80)
+northwhale.r<-rasterize(as(northwhale.sf,"Spatial"),northwhale.emptr,progress="text",field="Sum_Norm")
+```
+
+# Standardising the criterion scores
+## Objective 1: technical suitability
+### Classification approach
+#### Wind
+In the 2018 scoping document, the wind layer is classified into two classes: low (1) and medium (2) constraint. The cut-off level between the two classes is 9 m/s. This classification is recreated here by making a vector that specifies the class intervals and the value assigned per class (1 or 2). The upper boundary of the lowest constraint (1) is the maximum value of the raster (```11.40```)
+
+```{r standardising wind using classification: defining vector}
+mwind<-c(0,8.999999999,2,9,11.40,1)
+```
+
+This vector is then used to reclassify the input raster (wind).
+
+```{r standardising wind using classification: using vector to reclassify}
+mwind<-c(0,8.999999999,2,9,11.40,1)
+rclmatwind<-matrix(mwind, ncol=3, byrow = T)
+northwind_class<-reclassify(northwind.r, rcl = rclmatwind)
+
+classmap_wind<-tm_shape(northwind_class)+tm_raster(style="cat",title="Constraint level",labels=c("Low","Medium"))+tm_shape(northcoast.sf)+tm_polygons(border.col="black",col="beige")
+```
+#### Sediments
+For sediments, in the 2018 scoping document the types of sediments that are assigned per class are specified. This is used to group the sediment types into either a low constraint group or a high constraint group.
+
+```{r reclassifying sediments layer for constraint level}
+lowconstraint_group<-c("CLAY AND SAND","GRAVEL [MARINE SEDIMENT: FRENCH CLASSIFICATION: 250K MAPS ONLY]","GRAVEL [MARINE SEDIMENT]","GRAVEL, SAND AND SILT (for use on Digital maps only)","GRAVELLY MUD [MARINE SEDIMENT]","GRAVELLY MUDDY SAND [MARINE SEDIMENT]","GRAVELLY SAND [MARINE SEDIMENT: FRENCH CLASSIFICATION: 250K MAPS ONLY]","GRAVELLY SAND [MARINE SEDIMENT]","MUD","MUDDY GRAVEL [MARINE SEDIMENT]","MUDDY SAND [MARINE SEDIMENT]","MUDDY SANDY GRAVEL [MARINE SEDIMENT]","MUSSEL DEPOSIT (MARINE, BIOLOGICAL DEPOSIT)","SAND [MARINE SEDIMENT: FRENCH CLASSIFICATION: 250K MAPS ONLY]","SAND [MARINE SEDIMENT]","SANDY GRAVEL [MARINE SEDIMENT: FRENCH CLASSIFICATION: 250K MAPS ONLY]","SANDY GRAVEL [MARINE SEDIMENT]","SANDY MUD [MARINE SEDIMENT]","SLIGHTLY GRAVELLY MUD [MARINE SEDIMENT]","SLIGHTLY GRAVELLY MUDDY SAND [MARINE SEDIMENT]","SLIGHTLY GRAVELLY SAND [MARINE SEDIMENT]","SLIGHTLY GRAVELLY SANDY MUD [MARINE SEDIMENT]")
+
+highconstraint_group<-c("ROCK AND SEDIMENT","ROCK OR DIAMICTON (Offshore digital maps only)","UNDIFFERENTIATED SOLID ROCK.See UNKN & DRFT","DIAMICTON")
+```
+
+These groupings are then used to add new fields to the attribute table of the vector map for sediment types.
+```{r using the constraint groups to add new fields}
+northseabed.sf$constraint<-with(northseabed.sf,ifelse(ROCK_D %in% lowconstraint_group, "Low",
+                                                      ifelse(ROCK_D %in% highconstraint_group, "High",NA)))
+
+northseabed.sf$constraintvalue<-with(northseabed.sf,ifelse(ROCK_D %in% lowconstraint_group, 1,
+                                                      ifelse(ROCK_D %in% highconstraint_group, 3,NA)))
+
+#need both (doesn't work if field is a character, need to assign a number (1,2,3 rather than low, medium, high))
+
+#checking result
+sedimentmap<-tm_shape(northseabed.sf)+tm_fill(col="constraint")+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")
+```
+
+The sediment vector layer that includes the two new columns ```constraint``` and ```constraintvalue``` in the attribute table will now be converted to a raster, based on the ```constraintvalue``` field.
+
+```{r rasterizing sediment layer}
+require(raster)
+#create generic raster
+r.raster<-raster()
+#use extent to read bounds of vector and assign to raster
+extent(r.raster)<-extent(northseabed.sf)
+#use resolution of existing raster (resolution can only be defined in this way when it's an empty raster!)
+res(r.raster)<-res(northwind.r)
+
+#rasterize (fill empty raster)
+northseabed_r<-rasterize(northseabed.sf,r.raster,field=northseabed.sf$constraintvalue)
+
+#checking result
+tm_shape(northseabed_r)+tm_raster(style="fixed",breaks=c(0,2,3),legend.show=T,legend.reverse=T,title="Constraint map seabed sediments",labels=c("Low","High"),showNA=T,colorNA="white")+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette = list(seq = "YlOrBr"))
+```
+
+### Fuzzy approach: From Boolean to fuzziness
+#### Wind
+For the wind layer, a continuous function rather than two classes is used for the standardisation. The point at which the constraint level is 0 is the maximum value of the wind input raster.
+```{r fuzzy obj1}
+maxvalue_rastwind<-maxValue(northwind.r)
+
+eq_wind<-function(x)
+  ifelse( x<9, (((9-x)/9)+1),
+  ifelse( x>=9, ((maxvalue_rastwind-x)/(maxvalue_rastwind-9)),0))
+ggplot(data.frame(x=c(0,maxvalue_rastwind)), aes(x))+stat_function(fun=eq_wind)+xlab("Wind speed (m/s)")+ylab("Constraint level")
+
+fuzzywind<-calc(northwind.r,fun=eq_wind)
+
+fuzzymap_wind<-tm_shape(fuzzywind)+tm_raster(style="cont",title="Fuzzy wind")+tm_shape(northcoast.sf)+tm_polygons(border.col="black",col="beige")
+```
+
+This is then compared with the input map and the standardisation using classes (original approach)
+```{r comparing wind approaches}
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(1,3)))
+
+print(windmap_vector,vp=viewport(layout.pos.row=1,layout.pos.col=1))
+print(classmap_wind,vp=viewport(layout.pos.row=1,layout.pos.col=2))
+print(fuzzymap_wind,vp=viewport(layout.pos.row=1,layout.pos.col=3))
+
+```
+
+## Objective 2: fisheries
+### Classification approach
+#### Static fisheries
+First the histogram of the raster cells will be explored to see what is the best classification method.
+
+```{r histogram of raster,eval=T}
+north_static_lowres<-aggregate(north_static,10)
+f_static<-hist(north_static_lowres,plot=F)
+dat_static <- data.frame(counts= f_static$counts,breaks = f_static$mids)
+ggplot() + 
+  geom_bar(aes(x=breaks,y=counts),data=dat_static,stat = "identity",fill='blue',alpha = 0.8)+
+  xlab("Intensity of static fishing types (static demersal, crab and lobster)")+ ylab("Frequency")
+```
+
+As can be seen from the histogram, this dataset does not have a normal distribution. Due to the large size of the raster, the Fisher method was used which is an improvement of the Jenks' Natural Breaks Classification Method in terms of dealing with large data arrays. 
+
+```classIntervals``` is a function that splits up continuous data into class intervals, and it's possible to specify the number of classes and the style of classification.
+
+However, because it uses samplng (because N is large), each time it's run it might lead to different results regarding the class intervals. As well as that, the upper interval for the last class does not always include the maximum value so some values might be lost if this is not accounted for.  
+
+```{r reclassifying static fishing raster using fisher}
+zClass_staticf <- classIntervals(as.data.frame(north_static_lowres)[!is.na(as.data.frame(north_static_lowres))], n=3,
+style="fisher")
+zClass_staticf$brks
+maxValue(north_static_lowres)
+```
+
+The values from the output ```zClass$brks``` (```[1]```) are used for the reclassification. However, the format needs to be changed so that the limits of each class are defined and there is no overlap. For this, vector ```m``` is defined.
+
+This vector is in the format of:
+
+```c(minvalue class 1, maxvalue class 1,class value,minvalue class 2, maxvalue class 2, classs value, ...)```
+
+In order to avoid overlap, the last digit of each break was adjusted. 
+
+For example, to use the break level of ```0.1743032``` for the definition of both the first class and the second class, ```0.1743032``` is used for the first class as the upper boundary and for the second class ```0.1743033``` is used as a lower boundary.
+
+```{r defining vector m for static fishing,echo=T}
+m_staticf<-c(0, 0.1743032, 1,0.1743033, 0.7467404, 2, 0.7467405, 2.1, 3)
+```
+
+This vector is now used to reclassify the raster cell values. The histogram below shows the breaks in relation to the raster's histogram.
+
+```{r histogram with breaks from static fisher classification}
+zClassvect_staticf<-as.vector(zClass_staticf$brks)
+zClassdat_staticf<-as.data.frame(zClassvect_staticf)
+
+ggplot() + 
+  geom_bar(aes(x=breaks,y=counts),data=dat_static,stat = "identity",fill='blue',alpha = 0.8)+
+  xlab("Intensity of static fishing types (static demersal, crab and lobster)")+ ylab("Frequency")+geom_vline(aes(xintercept=zClassvect_staticf),data=as.data.frame(zClassdat_staticf))
+```
+
+These breaks will now be used to standardize the raster for static fisheries.
+
+```{r reclassifying the raster using jenks for static fisher classification}
+rclmat_static<-matrix(m_staticf, ncol=3, byrow = T)
+staticfreclass<-reclassify(north_static_lowres, rcl = rclmat_static)
+
+classify_map_staticfish<-tm_shape(staticfreclass)+tm_raster(style="fixed",breaks=c(0,1,2,3),legend.show=T,legend.reverse=T,title="Classification",labels=c("Low","Medium","High"),showNA = T,colorNA = "grey")+tm_layout(legend.width=5,legend.outside=T,aes.palette = list(seq = "YlOrBr"))+
+  tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+```
+
+#### Mobile fisheries
+
+```{r checking out histogram mobile fish}
+north_mobilefish_lowres<-aggregate(north_meanmobile,10)
+f_mobile<-hist(north_mobilefish_lowres,plot=F)
+dat_mobile <- data.frame(counts= f_mobile$counts,breaks = f_mobile$mids)
+ggplot() + 
+  geom_bar(aes(x=breaks,y=counts),data=dat_mobile,stat = "identity",fill='blue',alpha = 0.8)+
+  xlab("Intensity of mobile fisheries 2013-2017")+ ylab("Frequency")
+```
+
+```{r reclassifying mobile fishing raster using fisher}
+zClass_mobilef <- classIntervals(as.data.frame(north_mobilefish_lowres)[!is.na(as.data.frame(north_mobilefish_lowres))], n=3,
+style="fisher")
+zClass_mobilef$brks
+maxValue(north_mobilefish_lowres)
+```
+
+```{r defining vector m for mobile fishing,echo=T}
+m_mobilef<-c(0, 20172.30, 1,20172.31, 66590.84, 2, 66590.85, 425700, 3)
+```
+
+```{r histogram with breaks from mobile fisher classification}
+zClassvect_mobilef<-as.vector(zClass_mobilef$brks)
+zClassdat_mobilef<-as.data.frame(zClassvect_mobilef)
+
+ggplot() + 
+  geom_bar(aes(x=breaks,y=counts),data=dat_mobile,stat = "identity",fill='blue',alpha = 0.8)+
+  xlab("Intensity of mobile fishing (2013-2017)")+ ylab("Frequency")+geom_vline(aes(xintercept=zClassvect_mobilef),data=as.data.frame(zClassdat_mobilef))
+```
+
+These breaks will now be used to standardize the raster for mobile fisheries. After the standardization, ```NA``` values are converted to ```0```'s.
+
+```{r reclassifying the raster using jenks for mobile fisher classification}
+rclmat_mobilef<-matrix(m_mobilef, ncol=3, byrow = T)
+mobilefreclass<-reclassify(north_mobilefish_lowres, rcl = rclmat_mobilef)
+mobilefreclass[is.na(mobilefreclass)]<-0 #NA values get a value of 0 so that they're not included in the constraint classes
+
+classmap_mobilefish<-tm_shape(mobilefreclass)+tm_raster(style="fixed",breaks=c(0,1.5,2.5,4),legend.show=T,legend.reverse=T,title="Classification",labels=c("Low","Medium","High"))+tm_layout(legend.width=5,legend.outside=T,aes.palette = list(seq = "YlOrBr"))+
+  tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+```
+
+### Fuzzy approach: Adapting the score range procedure (SRP) to the layer for standardisation
+#### Static fisheries
+The score range procedure (SRP) is defined with the following equation:
+$$3\frac{raster-minValue(raster)}{maxValue(raster)-minValue(raster)}^\rho$$
+
+The level of risk can be adjused with the value of $\rho$, where a risk affine approach will have a higher value than a risk averse approach.
+
+The equation is multiplied by 3 so that it has the same range as the classified rasters, to enable comparison.
+
+```{r defining a value function by using map algebra for static fishing}
+#risk averse value function
+srp_staticfish<-3*((north_static_lowres-minValue(north_static_lowres))/(maxValue(north_static_lowres)-minValue(north_static_lowres)))^(1/3)
+
+srp_map_staticfish<-tm_shape(srp_staticfish)+tm_raster(style="cont",legend.show=T,legend.reverse=T,title="Risk averse",colorNA="grey")+tm_layout(legend.width=5,legend.outside=T,aes.palette = list(seq = "YlOrBr"))+tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+```
+
+```{r map comparison approaches static fishing}
+# comparing the maps
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(1,3)))
+print(combomap,vp=viewport(layout.pos.row=1,layout.pos.col=1))
+print(classify_map_staticfish,vp=viewport(layout.pos.row=1,layout.pos.col=2))
+print(srp_map_staticfish,vp=viewport(layout.pos.row=1,layout.pos.col=3))
+```
+
+These approaches can also be compared on a graph that depicts the relationship between the raw criterion score and the assigned constraint level. When interpreting the graphs it's important to be aware of the fact that the continuous value functions range between 0 and 3, while the classification approach has as values either 1,2 or 3.
+
+```{r graphs for value functions static fishing}
+#using the code for plotting a discrete (discontinuous) function
+#zClass$brks used as input parameters
+zClassvect_staticf
+m_staticf
+eq_staticfclass <- function(x) 
+  ifelse( x>=zClassvect_staticf[1] & x<zClassvect_staticf[2], 1,
+  ifelse( x>=zClassvect_staticf[2] & x<zClassvect_staticf[3], 2,
+  ifelse( x>=zClassvect_staticf[3] & x<=m_staticf[8],3,0 )))
+
+#defining the continuous value functions
+fun.riskaverse<-function(x)3*((x-min(x))/(max(x)-min(x)))^(1/3)
+
+#plot
+ggplot(data.frame(x=c(0,2)), aes(x))+stat_function(fun=fun.riskaverse,aes(color="#E69F00"))+stat_function(fun=eq_staticfclass, geom="step",aes(color="#CC79A7"))+xlab("Intensity of static fisheries (static demersal, crab and lobster) in North SORER region")+ylab("Assigned constraint values")+labs(color="Technique used to standardise criterion score")+scale_color_discrete(name="Technique used to standardise criterion score",labels=c("Reclassification","Score range procedure (risk averse)"))
+```
+
+#### Mobile fisheries
+
+```{r defining a value function by using map algebra for mobile fishing}
+#risk averse value function
+srp_mobilefish<-3*((north_mobilefish_lowres-minValue(north_mobilefish_lowres))/(maxValue(north_mobilefish_lowres)-minValue(north_mobilefish_lowres)))^(1/3)
+
+srp_mobilefish_na20<-srp_mobilefish
+srp_mobilefish_na20[is.na(srp_mobilefish_na20)]<-0
+
+srp_map_mobilefish<-tm_shape(srp_mobilefish_na20)+tm_raster(style="cont",legend.show=T,legend.reverse=T,title="Risk averse",colorNA="grey")+tm_layout(legend.width=5,legend.outside=T,aes.palette = list(seq = "YlOrBr"))+tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+```
+
+```{r map comparison approaches mobile fishing}
+# comparing the maps
+activefishmap<-tm_shape(north_mobilefish_lowres)+tm_raster(style="cont",legend.show=T, legend.reverse=T,title="Mobile fishing")+tm_layout(legend.width=5,legend.outside=T,aes.palette=list(seq= "YlOrBr"))+tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(1,3)))
+print(activefishmap,vp=viewport(layout.pos.row=1,layout.pos.col=1))
+print(classmap_mobilefish,vp=viewport(layout.pos.row=1,layout.pos.col=2))
+print(srp_map_mobilefish,vp=viewport(layout.pos.row=1,layout.pos.col=3))
+```
+
+```{r graphs for value functions mobile fishing}
+#using the code for plotting a discrete (discontinuous) function
+#zClass$brks used as input parameters
+maxvaluerast_mobilef<-maxValue(north_mobilefish_lowres)
+zClassvect_mobilef
+m_mobilef
+eq_mobilefclass <- function(x) 
+  ifelse( x>=zClassvect_mobilef[1] & x<zClassvect_mobilef[2], 1,
+  ifelse( x>=zClassvect_mobilef[2] & x<zClassvect_mobilef[3], 2,
+  ifelse( x>=zClassvect_mobilef[3] & x<=m_mobilef[8],3,0 )))
+ggplot(data.frame(x=c(0,maxvaluerast_mobilef)), aes(x))+stat_function(fun=eq_mobilefclass,geom="step",aes(color="#CC79A7"))
+
+#defining the continuous value functions
+fun.riskaverse<-function(x)3*((x-min(x))/(max(x)-min(x)))^(1/3)
+
+#plot
+ggplot(data.frame(x=c(0,maxvaluerast_mobilef)), aes(x))+stat_function(fun=fun.riskaverse,aes(color="#E69F00"))+stat_function(fun=eq_mobilefclass, geom="step",aes(color="#CC79A7"))+xlab("Intensity of mobile fisheries in North SORER region")+ylab("Assigned constraint values")+labs(color="Technique used to standardise criterion score")+scale_color_discrete(name="Technique used to standardise criterion score",labels=c("Reclassification","Score range procedure (risk averse)"))
+
+
+ggplot(data.frame(x=c(0,maxvaluerast_mobilef)), aes(x))+stat_function(fun=eq_mobilefclass, geom="step",aes(color="#CC79A7"))+xlab("Intensity of mobile fisheries in North SORER region")+ylab("Assigned constraint values")+labs(color="Technique used to standardise criterion score")+scale_color_discrete(name="Technique used to standardise criterion score",labels=c("Reclassification","Score range procedure (risk averse)"))
+```
+
+For mobile fisheries, the same score was used as with the constraint level because mobile/mobile fisheries have a higher anticipated conflict with offshore wind turbines than static fisheries (max constraint level = 3)
+
+#### Differentiating between static and mobile fishers in terms of constraint level
+One way of taking into account different interactions of different sectors with offshore wind developments is to differentiate the maximum constraint level the input map is standardised to. For example, we can use it to give a different maximum conflict level for static fisheries compared to mobile fisheries.
+
+The maximum constraint level for static fisheries can be set to ```2``` instead of ```3```.
+
+```{r defining a value function by using map algebra for sea angling raster}
+#risk averse value function
+srp_staticfish_conflict<-2*((north_static_lowres-minValue(north_static_lowres))/(maxValue(north_static_lowres)-minValue(north_static_lowres)))^(1/3)
+
+#max and min of the stack
+max_r  <- 3
+min_r  <- 0 # min of raster Stack: legend lower limit
+breaks <- (max_r - min_r)/15 # increase denominator for more breaks
+lab    <- seq(0, (max_r+1), by = breaks) # create the vector of legend breaks
+
+srp_map_conflict<-tm_shape(srp_staticfish_conflict)+tm_raster(style="cont",legend.show=T,legend.reverse=T,title="Constraint level",colorNA="grey",breaks=lab)+tm_layout(legend.width=5,legend.outside=T,aes.palette = list(seq = "YlOrBr"),main.title="Adjusted static")+tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+
+srp_map_staticfish_original<-tm_shape(srp_staticfish)+tm_raster(style="cont",legend.show=T,legend.reverse=T,title="Constraint level",colorNA="grey",breaks=lab)+tm_layout(legend.width=5,legend.outside=T,aes.palette = list(seq = "YlOrBr"),main.title="Original static")+tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+```
+
+```{r map comparison approaches static fishing conflict score}
+srp_map_mobilefish_conflict<-tm_shape(srp_mobilefish_na20)+tm_raster(style="cont",legend.show=T,legend.reverse=T,title="Constraint level",colorNA="grey",breaks=lab)+tm_layout(legend.width=5,legend.outside=T,aes.palette = list(seq = "YlOrBr"),main.title="Original mobile")+tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+# comparing the maps
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(1,3)))
+print(srp_map_mobilefish_conflict,vp=viewport(layout.pos.row=1,layout.pos.col=1))
+print(srp_map_staticfish_original,vp=viewport(layout.pos.row=1,layout.pos.col=2))
+print(srp_map_conflict,vp=viewport(layout.pos.row=1,layout.pos.col=3))
+```
+
+These approaches can also be compared on a graph that depicts the relationship between the raw criterion score and the assigned constraint level. When interpreting the graphs it's important to be aware of the fact that the continuous value functions range between 0 and 3, while the classification approach has as values either 1,2 or 3.
+
+```{r graphs for value functions static fishing conflict score}
+#using the code for plotting a discrete (discontinuous) function
+#zClass$brks used as input parameters
+eq_staticfclass <- function(x) 
+  ifelse( x>=zClassvect_staticf[1] & x<zClassvect_staticf[2], 1,
+  ifelse( x>=zClassvect_staticf[2] & x<zClassvect_staticf[3], 2,
+  ifelse( x>=zClassvect_staticf[3] & x<=m_staticf[8],3,0 )))
+
+#defining the continuous value functions
+fun.riskaverse<-function(x)3*((x-min(x))/(max(x)-min(x)))^(1/3)
+fun.riskaverse_conflict<-function(x)2*((x-min(x))/(max(x)-min(x)))^(1/3)
+
+#plot
+ggplot(data.frame(x=c(0,2)), aes(x))+stat_function(fun=fun.riskaverse,aes(color="#CC79A7"))+stat_function(fun=fun.riskaverse_conflict,aes(color="#E69F00"))+xlab("Intensity of static fisheries (static demersal, crab and lobster) in North SORER region")+ylab("Assigned constraint values")+labs(color="Fisheries type")+scale_color_discrete(name="Fisheries type",labels=c("Mobile fishing","Static fishing"))
+
+ggplot(data.frame(x=c(0,2)), aes(x))+stat_function(fun=eq_staticfclass, geom="step",aes(color="#009E73"))+xlab("Intensity of static fisheries (static demersal, crab and lobster) in North SORER region")+ylab("Assigned constraint values")+labs(color="Technique used to standardise criterion score")+scale_color_discrete(name="Technique used to standardise criterion score",labels=c("Reclassification"))
+```
+
+## Objective 3: Tourism and leisure
+### Classification approach
+
+```{r checking out histogram leisure}
+north_allacts_lowres<-aggregate(north_allacts,10)
+f_leisure<-hist(north_allacts_lowres,plot=F)
+dat_leisure <- data.frame(counts= f_leisure$counts,breaks = f_leisure$mids)
+ggplot() + 
+  geom_bar(aes(x=breaks,y=counts),data=dat_leisure,stat = "identity",fill='blue',alpha = 0.8)+
+  xlab("Intensity of tourism and leisure activities")+ ylab("Frequency")
+```
+
+```{r reclassifying leisure raster using fisher}
+zClass_leisure <- classIntervals(as.data.frame(north_allacts_lowres)[!is.na(as.data.frame(north_allacts_lowres))], n=3,
+style="fisher")
+zClass_leisure$brks
+maxValue(north_allacts_lowres)
+```
+
+```{r defining vector m for leisure,echo=T}
+m_leisure<-c(0.000, 4.595, 1,4.596, 13.440, 2, 13.441, 45, 3)
+```
+
+```{r histogram with breaks from leisure classification}
+zClassvect_leisure<-as.vector(zClass_leisure$brks)
+zClassdat_leisure<-as.data.frame(zClassvect_leisure)
+
+ggplot() + 
+  geom_bar(aes(x=breaks,y=counts),data=dat_leisure,stat = "identity",fill='blue',alpha = 0.8)+
+  xlab("Intensity of tourism and leisure activities")+ ylab("Frequency")+geom_vline(aes(xintercept=zClassvect_leisure),data=as.data.frame(zClassdat_leisure))
+```
+
+```{r reclassifying the raster using jenks for leisure classification}
+rclmat_leisure<-matrix(m_leisure, ncol=3, byrow = T)
+leisureactsreclass<-reclassify(north_allacts_lowres, rcl = rclmat_leisure)
+leisureactsreclass[is.na(leisureactsreclass)]<-0 #NA values get a value of 0 so that they're not included in the constraint classes
+
+classmap_leisure<-tm_shape(leisureactsreclass)+tm_raster(style="fixed",breaks=c(0,1.5,2.5,5),legend.show=T,legend.reverse=T,title="Classification",labels=c("Low","Medium","High"))+tm_layout(legend.width=5,legend.outside=T,aes.palette=list(seq= "YlOrBr"))+
+  tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+```
+### Fuzzy approach: Adapting the score range procedure (SRP) to the layer for standardisation
+```{r defining a value function by using map algebra for tourism/leisure}
+#linear (neutral) value function
+srp_leisure_linear<-3*((north_allacts_lowres-minValue(north_allacts_lowres))/(maxValue(north_allacts_lowres)-minValue(north_allacts_lowres)))
+#risk averse value function
+srp_leisure_averse<-3*((north_allacts_lowres-minValue(north_allacts_lowres))/(maxValue(north_allacts_lowres)-minValue(north_allacts_lowres)))^(1/3)
+#add zeros afterwards
+srp_leisure_averse[is.na(srp_leisure_averse)]<-0
+srp_leisure_linear[is.na(srp_leisure_linear)]<-0
+srp_map_leisure_averse<-tm_shape(srp_leisure_averse)+tm_raster(style="cont",legend.show=T,legend.reverse=T,title="Risk averse")+tm_layout(legend.width=5,legend.outside=T,aes.palette=list(seq= "YlOrBr"))+tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+
+srp_map_leisure_linear<-tm_shape(srp_leisure_linear)+tm_raster(style="cont",legend.show=T,legend.reverse=T,title="Linear (neutral)")+tm_layout(legend.width=5,legend.outside=T,aes.palette=list(seq= "YlOrBr"))+tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+```
+
+```{r map comparison approaches tourism/leisure}
+leisuremap<-tm_shape(north_allacts_lowres)+tm_raster(style="cont",legend.show=T, legend.reverse=T,title="Leisure activities")+tm_layout(legend.width=5,legend.outside=T,aes.palette=list(seq= "YlOrBr"))+tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+
+
+# comparing the maps
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(2,3)))
+print(leisuremap,vp=viewport(layout.pos.row=1,layout.pos.col=1))
+print(classmap_leisure,vp=viewport(layout.pos.row=1,layout.pos.col=2))
+print(srp_map_leisure_averse,vp=viewport(layout.pos.row=1,layout.pos.col=3))
+print(srp_map_leisure_linear,vp=viewport(layout.pos.row=2,layout.pos.col=3))
+```
+
+```{r graphs for value functions tourism/leisure}
+#using the code for plotting a discrete (discontinuous) function
+#zClass$brks used as input parameters
+maxvaluerast_leisure<-maxValue(north_allacts_lowres)
+zClassvect_leisure
+m_leisure
+eq_leisureclass <- function(x) 
+  ifelse( x>=zClassvect_leisure[1] & x<zClassvect_leisure[2], 1,
+  ifelse( x>=zClassvect_leisure[2] & x<zClassvect_leisure[3], 2,
+  ifelse( x>=zClassvect_leisure[3] & x<=m_leisure[8],3,0 )))
+
+#defining the continuous value functions
+fun.riskaverse<-function(x)3*((x-min(x))/(max(x)-min(x)))^(1/3)
+fun.riskneutral<-function(x)3*((x-min(x))/(max(x)-min(x)))
+#plot
+ggplot(data.frame(x=c(0,maxvaluerast_leisure)), aes(x))+stat_function(fun=fun.riskaverse,aes(color="#E69F00"))+stat_function(fun=fun.riskneutral,aes(color="#O09E73"))+stat_function(fun=eq_leisureclass, geom="step",aes(color="#CC79A7"))+xlab("Intensity of tourism and leisure activities in North SORER region")+ylab("Assigned constraint values")+labs(color="Technique used to standardise criterion score")+scale_color_discrete(name="Technique used to standardise criterion score",labels=c("Reclassification","Score range procedure (risk averse)","Score range procedure (linear/risk neutral)"))
+
+ggplot(data.frame(x=c(0,maxvaluerast_leisure)), aes(x))+stat_function(fun=eq_leisureclass, geom="step",aes(color="#CC79A7"))+xlab("Intensity of tourism and leisure activities in North SORER region")+ylab("Assigned constraint values")+labs(color="Technique used to standardise criterion score")+scale_color_discrete(name="Technique used to standardise criterion score",labels=c("Reclassification","Score range procedure (risk averse)","Score range procedure (linear/risk neutral)"))
+```
+
+## Objective 4: marine birds and marine mammals
+### Classification approach
+#### Birds
+```{r checking out histogram birds}
+birdmap<-tm_shape(northbird.r)+tm_raster(title="Bird collision risk",legend.reverse=T)+tm_layout(legend.outside=T)+tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+f_birds<-hist(northbird.r,plot=F)
+dat_birds <- data.frame(counts= f_birds$counts,breaks = f_birds$mids)
+
+ggplot() + 
+  geom_bar(aes(x=breaks,y=counts),data=dat_birds,stat = "identity",fill='blue',alpha = 0.8)+
+  xlab("Bird collision risk")+ ylab("Frequency")
+```
+```{r reclassifying bird raster using fisher}
+zClass_bird <- classIntervals(as.data.frame(northbird.r)[!is.na(as.data.frame(northbird.r))], n=3,
+style="fisher")
+zClass_bird$brks
+maxValue(northbird.r)
+```
+
+```{r defining vector m for birds,echo=T}
+m_bird<-c(0, 10330.6, 1,10330.7, 108187.9, 2, 108188.0, 266440.00, 3)
+```
+
+```{r histogram with breaks from birds classification}
+zClassvect_bird<-as.vector(zClass_bird$brks)
+zClassdat_bird<-as.data.frame(zClassvect_bird)
+
+ggplot() + 
+  geom_bar(aes(x=breaks,y=counts),data=dat_birds,stat = "identity",fill='blue',alpha = 0.8)+
+  xlab("Bird collision risk")+ ylab("Frequency")+geom_vline(aes(xintercept=zClassvect_bird),data=as.data.frame(zClassdat_bird))
+```
+
+```{r reclassifying the raster using jenks for birds classification}
+rclmat_bird<-matrix(m_bird, ncol=3, byrow = T)
+birdsreclass<-reclassify(northbird.r, rcl = rclmat_bird)
+
+classmap_birds<-tm_shape(birdsreclass)+tm_raster(style="fixed",breaks=c(0,1.5,2.5,4),legend.show=T,legend.reverse=T,title="Classification",labels=c("Low","Medium","High"))+tm_layout(legend.width=5,legend.outside=T,aes.palette=list(seq= "YlOrBr"))+
+  tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+```
+
+#### Whales
+```{r checking out histogram whales}
+whalemap<-tm_shape(northwhale.r)+tm_raster(style="cont",legend.show=T,legend.reverse=T,title="Cetacean sightings")+tm_layout(legend.width=5,legend.outside=T,aes.palette=list(seq= "YlOrBr"))+tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+
+f_whales<-hist(northwhale.r,plot=F)
+dat_whales <- data.frame(counts= f_whales$counts,breaks = f_whales$mids)
+ggplot() + 
+  geom_bar(aes(x=breaks,y=counts),data=dat_whales,stat = "identity",fill='blue',alpha = 0.8)+
+  xlab("Cetacean sightings")+ ylab("Frequency")
+```
+
+```{r reclassifying whale raster using fisher}
+zClass_whales <- classIntervals(as.data.frame(northwhale.r)[!is.na(as.data.frame(northwhale.r))], n=3,
+style="fisher")
+zClass_whales$brks
+maxValue(northwhale.r)
+```
+
+```{r defining vector m for whales,echo=T}
+m_whales<-c(0, 0.0462640, 1,0.0462641, 0.2153585, 2, 0.2153586, 0.45, 3)
+```
+
+```{r histogram with breaks from whales classification}
+zClassvect_whales<-as.vector(zClass_whales$brks)
+zClassdat_whales<-as.data.frame(zClassvect_whales)
+
+ggplot() + 
+  geom_bar(aes(x=breaks,y=counts),data=dat_whales,stat = "identity",fill='blue',alpha = 0.8)+
+  xlab("Cetacean sightings")+ ylab("Frequency")+geom_vline(aes(xintercept=zClassvect_whales),data=as.data.frame(zClassdat_whales))
+```
+
+```{r reclassifying the raster using jenks for whale classification}
+rclmat_whales<-matrix(m_whales, ncol=3, byrow = T)
+whalereclass<-reclassify(northwhale.r, rcl = rclmat_whales)
+whalereclass[is.na(whalereclass)]<-0
+classmap_whales<-tm_shape(northeez.sf)+tm_polygons(col="grey",border.col="grey")+tm_shape(whalereclass)+tm_raster(style="fixed",breaks=c(0,1.5,2.5,4),legend.show=T,legend.reverse=T,title="Classification",labels=c("Low","Medium","High"))+tm_layout(legend.width=5,legend.outside=T,aes.palette=list(seq= "YlOrBr"))+
+  tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+```
+
+### Fuzzy approach: Adapting the score range procedure (SRP) to the layer for standardisation
+#### Birds
+```{r defining a value function by using map algebra for birds}
+#risk averse value function
+srp_birds<-3*((northbird.r-minValue(northbird.r))/(maxValue(northbird.r)-minValue(northbird.r)))^(1/3)
+srp_birds[is.na(srp_birds)]<-0
+srp_map_birds<-tm_shape(srp_birds)+tm_raster(style="cont",legend.show=T,legend.reverse=T,title="Risk averse")+tm_layout(legend.width=5,legend.outside=T,aes.palette=list(seq= "YlOrBr"))+tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+```
+
+```{r map comparison approaches birds}
+# comparing the maps
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(1,3)))
+print(birdmap,vp=viewport(layout.pos.row=1,layout.pos.col=1))
+print(classmap_birds,vp=viewport(layout.pos.row=1,layout.pos.col=2))
+print(srp_map_birds,vp=viewport(layout.pos.row=1,layout.pos.col=3))
+```
+
+```{r graphs for value functions birds}
+#using the code for plotting a discrete (discontinuous) function
+#zClass$brks used as input parameters
+maxvaluerast_birds<-maxValue(northbird.r)
+zClassvect_bird
+m_bird
+eq_birdclass <- function(x) 
+  ifelse( x>=zClassvect_bird[1] & x<zClassvect_bird[2], 1,
+  ifelse( x>=zClassvect_bird[2] & x<zClassvect_bird[3], 2,
+  ifelse( x>=zClassvect_bird[3] & x<=m_bird[8],3,0 )))
+
+#defining the continuous value functions
+fun.riskaverse<-function(x)3*((x-min(x))/(max(x)-min(x)))^(1/3)
+
+#plot
+ggplot(data.frame(x=c(0,maxvaluerast_birds)), aes(x))+stat_function(fun=fun.riskaverse,aes(color="#E69F00"))+stat_function(fun=eq_birdclass, geom="step",aes(color="#CC79A7"))+xlab("Bird collision risk")+ylab("Assigned constraint values")+labs(color="Technique used to standardise criterion score")+scale_color_discrete(name="Technique used to standardise criterion score",labels=c("Reclassification","Score range procedure (risk averse)"))
+
+ggplot(data.frame(x=c(0,maxvaluerast_birds)), aes(x))+stat_function(fun=eq_birdclass, geom="step",aes(color="#CC79A7"))+xlab("Bird collision risk")+ylab("Assigned constraint values")+labs(color="Technique used to standardise criterion score")+scale_color_discrete(name="Technique used to standardise criterion score",labels=c("Reclassification","Score range procedure (risk averse)"))
+```
+#### Whales
+```{r defining a value function by using map algebra for whales}
+#risk averse value function
+srp_whales<-3*((northwhale.r-minValue(northwhale.r))/(maxValue(northwhale.r)-minValue(northwhale.r)))^(1/3)
+srp_whales[is.na(srp_whales)]<-0
+
+srp_map_whales<-tm_shape(srp_whales)+tm_raster(style="cont",legend.show=T,legend.reverse=T,title="Risk averse")+tm_layout(legend.width=5,legend.outside=T,aes.palette=list(seq= "YlOrBr"))+tm_shape(northcoast.sf)+tm_polygons(col="beige",border.col="black")
+```
+
+```{r map comparison approaches whales}
+# comparing the maps
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(1,3)))
+print(whalemap,vp=viewport(layout.pos.row=1,layout.pos.col=1))
+print(classmap_whales,vp=viewport(layout.pos.row=1,layout.pos.col=2))
+print(srp_map_whales,vp=viewport(layout.pos.row=1,layout.pos.col=3))
+```
+
+```{r graphs for value functions whales}
+#using the code for plotting a discrete (discontinuous) function
+#zClass$brks used as input parameters
+maxvaluerast_whales<-maxValue(northwhale.r)
+zClassvect_whales
+m_whales
+eq_whalesclass <- function(x) 
+  ifelse( x>=zClassvect_whales[1] & x<zClassvect_whales[2], 1,
+  ifelse( x>=zClassvect_whales[2] & x<zClassvect_whales[3], 2,
+  ifelse( x>=zClassvect_whales[3] & x<=m_whales[8],3,0 )))
+
+#defining the continuous value functions
+fun.riskaverse<-function(x)3*((x-min(x))/(max(x)-min(x)))^(1/3)
+
+#plot
+ggplot(data.frame(x=c(0,maxvaluerast_whales)), aes(x))+stat_function(fun=fun.riskaverse,aes(color="#E69F00"))+stat_function(fun=eq_whalesclass, geom="step",aes(color="#CC79A7"))+xlab("Cetacean sightings")+ylab("Assigned constraint values")+labs(color="Technique used to standardise criterion score")+scale_color_discrete(name="Technique used to standardise criterion score",labels=c("Reclassification","Score range procedure (risk averse)"))
+
+ggplot(data.frame(x=c(0,maxvaluerast_whales)), aes(x))+stat_function(fun=eq_whalesclass, geom="step",aes(color="#CC79A7"))+xlab("Cetacean sightings")+ylab("Assigned constraint values")+labs(color="Technique used to standardise criterion score")+scale_color_discrete(name="Technique used to standardise criterion score",labels=c("Reclassification","Score range procedure (risk averse)"))
+```
+
+# Overlays
+## Objective 1
+### Matching the raster properties
+#### Range
+```{r ranges class layers}
+range(northwind_class)
+range(northseabed_r)
+range(staticfreclass)
+range(mobilefreclass)
+range(leisureactsreclass)
+range(birdsreclass)
+range(whalereclass)
+```
+#### Origin
+```{r match origin,extent obj1 (resolution and dimensions already the same)}
+origin(northwind_class)
+origin(northseabed_r)
+origin(fuzzywind)
+
+origin_northseabed<-origin(northseabed_r)
+origin(fuzzywind)<-origin_northseabed
+origin(northwind_class)<-origin(northseabed_r)
+
+origin(northseabed_r)<-origin(northwind_class)
+origin(northwind_class)<-origin(northseabed_r)
+origin(fuzzywind)<-origin(northseabed_r)
+```
+#### Extent
+```{r extent obj1 overlay}
+extent(northwind_class) #larger extent
+extent(northseabed_r)
+extent(fuzzywind)
+
+northseabed_r<-extend(northseabed_r,northwind_class)
+northwind_class<-extend(northwind_class,northseabed_r)
+extent(northseabed_r)
+extent(northwind_class)
+
+northseabed_r<-extend(northseabed_r,northwind_class)
+northwind_class<-extend(northwind_class,northseabed_r)
+fuzzywind<-extend(fuzzywind,northseabed_r)
+```
+#### Turning ```NA``` values to ```0```
+```{r overlays turning nas to zero}
+northseabed_r[is.na(northseabed_r)]<-0
+northwind_class[is.na(northwind_class)]<-0
+fuzzywind[is.na(fuzzywind)]<-0
+```
+
+### Overlay operation
+```{r overlay obj 1}
+overlay_obj1<-10*(northwind_class)+5*(northseabed_r)
+
+fuzzyoverlay_obj1<-10*fuzzywind+5*northseabed_r
+
+difference_obj1<-overlay_obj1-fuzzyoverlay_obj1
+```
+### Mapping the overlays
+```{r mapping the overlays obj1}
+overlays_obj1<-stack(overlay_obj1,fuzzyoverlay_obj1)
+
+#max and min of the stack
+max_r  <- maxValue(overlays_obj1)[[1]] # max of raster stack: legend upper limit
+min_r  <- minValue(overlays_obj1)[[2]] # min of raster Stack: legend lower limit
+breaks <- (max_r - min_r)/15 # increase denominator for more breaks
+lab    <- seq(0, (max_r+1), by = breaks) # create the vector of legend breaks
+
+
+classoverlay_obj1<-tm_shape(overlay_obj1)+tm_raster(legend.show=T,legend.reverse=T,title="Overlay technical layers (objective 1)",breaks=lab)+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette=list(seq= "YlOrBr"))
+
+fuzzyoverlay_obj1_map<-tm_shape(fuzzyoverlay_obj1)+tm_raster(legend.show=T,legend.reverse=T,title="Fuzzy overlay technical layers (objective 1)",breaks=lab)+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette=list(seq= "YlOrBr"))
+
+difference_obj1<-tm_shape(difference_obj1)+tm_raster(legend.show=T,legend.reverse=T,title="Difference between overlay",breaks=lab)+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette=list(seq= "YlOrBr"))
+
+grid.newpage()
+
+pushViewport(viewport(layout=grid.layout(1,3)))
+
+print(classoverlay_obj1,vp=viewport(layout.pos.row=1,layout.pos.col=1))
+print(fuzzyoverlay_obj1_map,vp=viewport(layout.pos.row=1,layout.pos.col=2))
+print(difference_obj1,vp=viewport(layout.pos.row=1,layout.pos.col=3))
+```
+
+## Objective 1
+### Matching the properties of the rasters
+#### Origin
+```{r match origin,extent obj2}
+origin(staticfreclass)
+origin(mobilefreclass)
+origin(srp_staticfish)
+origin(srp_mobilefish_na20)
+origin(srp_staticfish_conflict)
+
+origin_mobilefreclass<-origin(mobilefreclass)
+origin(srp_staticfish_conflict)<-origin_mobilefreclass
+```
+#### Extent
+```{r match extent overlay obj2}
+extent(staticfreclass) #larger extent
+extent(mobilefreclass)
+extent(srp_staticfish)
+extent(srp_mobilefish_na20)
+extent(srp_staticfish_conflict)
+
+srp_staticfish<-extend(srp_staticfish,staticfreclass)
+srp_mobilefish_na20<-extend(srp_mobilefish_na20,staticfreclass)
+staticfreclass<-extend(staticfreclass,mobilefreclass)
+srp_staticfish_conflict<-extend(srp_staticfish_conflict,staticfreclass)
+```
+#### Resolution
+```{r matching resolution overlay obj2}
+staticfreclass<-resample(x=staticfreclass,y=mobilefreclass)
+mobilefreclass<-resample(x=mobilefreclass,y=staticfreclass)
+
+srp_staticfish<-resample(x=srp_staticfish,y=mobilefreclass)
+srp_mobilefish_na20<-resample(x=srp_mobilefish_na20,y=srp_staticfish)
+
+srp_staticfish_conflict<-resample(x=srp_staticfish_conflict,y=srp_mobilefish_na20)
+```
+#### Turning the ```NA``` values to ```0```
+```{r overlay obj2 turning nas to zeroes}
+staticfreclass[is.na(staticfreclass)]<-0
+mobilefreclass[is.na(mobilefreclass)]<-0
+srp_staticfish[is.na(srp_staticfish)]<-0
+srp_mobilefish_na20[is.na(srp_mobilefish_na20)]<-0
+srp_staticfish_conflict[is.na(srp_staticfish_conflict)]<-0
+
+```
+### Overlay operation
+```{r overlay obj 2}
+overlay_obj2<-staticfreclass+mobilefreclass
+fuzzyoverlay_obj2<-srp_staticfish+srp_mobilefish_na20
+fuzzyoverlay_obj2_conflict<-srp_staticfish_conflict+srp_mobilefish_na20
+difference_obj2<-overlay_obj2-fuzzyoverlay_obj2
+```
+
+```{r mapping overlay obj2}
+overlays_obj2<-stack(overlay_obj2,fuzzyoverlay_obj2)
+
+# max and min of the stack
+max_r  <- maxValue(overlays_obj2)[[1]] # max of raster stack: legend upper limit
+min_r  <- minValue(overlays_obj2)[[2]] # min of raster Stack: legend lower limit
+breaks <- (max_r - min_r)/15 # increase denominator for more breaks
+lab    <- seq(0, (max_r+1), by = breaks) # create the vector of legend breaks
+
+
+classoverlay_obj2<-tm_shape(overlay_obj2)+tm_raster(legend.show=T,legend.reverse=T,title="Overlay fisheries layers (objective 2)",breaks=lab)+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette=list(seq= "YlOrBr"))
+
+fuzzyoverlay_obj2_map<-tm_shape(fuzzyoverlay_obj2)+tm_raster(legend.show=T,legend.reverse=T,title="Fuzzy overlay fisheries layers (objective 2)",breaks=lab)+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette=list(seq= "YlOrBr"))
+
+fuzzyoverlay_obj2_conflict<-tm_shape(fuzzyoverlay_obj2_conflict)+tm_raster(legend.show=T,legend.reverse=T,title="Fuzzy overlay fisheries layers (objective 2)",breaks=lab)+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette=list(seq= "YlOrBr"))
+
+difference_obj2<-tm_shape(difference_obj2)+tm_raster(legend.show=T,legend.reverse=T,title="Difference between overlay")+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T)
+
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(2,3)))
+
+print(classoverlay_obj2,vp=viewport(layout.pos.row=1,layout.pos.col=1))
+print(fuzzyoverlay_obj2_map,vp=viewport(layout.pos.row=1,layout.pos.col=2))
+print(fuzzyoverlay_obj2_conflict,vp=viewport(layout.pos.row=2,layout.pos.col=2))
+print(difference_obj2,vp=viewport(layout.pos.row=1,layout.pos.col=3))
+```
+
+## Objective 4
+### Matching the properties of the rasters
+#### Extent
+```{r match origin,extent obj4}
+extent(whalereclass) 
+extent(birdsreclass)
+extent(whalereclass)
+extent(birdsreclass)
+
+#whalereclass<-extend(whalereclass,birdsreclass)
+#birdsreclass<-extend(birdsreclass,whalereclass)
+```
+```{r matchign obj4 overlays na20}
+whalereclass[is.na(whalereclass)]<-0
+birdsreclass[is.na(birdsreclass)]<-0
+```
+
+```{r matching obj4 overlays resolution}
+res(whalereclass)
+res(birdsreclass)
+res(srp_birds)
+res(srp_whales)
+#staticfreclass<-resample(x=staticfreclass,y=mobilefreclass)
+```
+
+```{r matching obj4 overlays origin}
+origin_whalereclass<-origin(whalereclass)
+origin(birdsreclass)<-origin_whalereclass
+origin(srp_whales)<-origin_whalereclass
+origin(srp_birds)<-origin_whalereclass
+```
+### Overlay operation
+```{r overlay obj 4}
+overlay_obj4<-9*whalereclass+10*birdsreclass
+fuzzyoverlay_obj4<-9*srp_whales+10*srp_birds
+difference_obj4<-overlay_obj4-fuzzyoverlay_obj4
+```
+### Mapping the overlays
+```{r mapping the overlays obj4}
+overlays_obj4<-stack(overlay_obj4,fuzzyoverlay_obj4)
+
+# max and min of the stack
+max_r  <- maxValue(overlays_obj4)[[1]] # max of raster stack: legend upper limit
+min_r  <- minValue(overlays_obj4)[[2]] # min of raster Stack: legend lower limit
+breaks <- (max_r - min_r)/15 # increase denominator for more breaks
+lab    <- seq(0, (max_r+1), by = breaks) # create the vector of legend breaks
+
+
+classoverlay_obj4_map<-tm_shape(overlay_obj4)+tm_raster(legend.show=T,legend.reverse=T,title="Overlay fisheries layers (objective 2)",breaks=lab)+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette=list(seq= "YlOrBr"))
+
+fuzzyoverlay_obj4_map<-tm_shape(fuzzyoverlay_obj4)+tm_raster(legend.show=T,legend.reverse=T,title="Fuzzy overlay fisheries layers (objective 2)",breaks=lab)+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette=list(seq= "YlOrBr"))
+
+difference_obj4<-tm_shape(difference_obj4)+tm_raster(legend.show=T,legend.reverse=T,title="Difference between overlay")+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T)
+
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(1,3)))
+
+print(classoverlay_obj4_map,vp=viewport(layout.pos.row=1,layout.pos.col=1))
+print(fuzzyoverlay_obj4_map,vp=viewport(layout.pos.row=1,layout.pos.col=2))
+print(difference_obj4,vp=viewport(layout.pos.row=1,layout.pos.col=3))
+```
+
+# Overlay different objectives
+To combine the overlays from all objectives, the resolution needs to be matched.
+```{r overall overlay prep}
+overlay_obj1[is.na(overlay_obj1)]<-0
+fuzzyoverlay_obj1[is.na(fuzzyoverlay_obj1)]<-0
+overlay_obj2[is.na(overlay_obj2)]<-0
+fuzzyoverlay_obj2[is.na(fuzzyoverlay_obj2)]<-0
+leisureactsreclass[is.na(leisureactsreclass)]<-0
+srp_leisure_averse[is.na(srp_leisure_averse)]<-0
+overlay_obj4[is.na(overlay_obj4)]<-0
+fuzzyoverlay_obj4[is.na(fuzzyoverlay_obj4)]<-0
+
+overlay_obj2<-resample(x=overlay_obj2,y=overlay_obj1)
+leisureactsreclass<-resample(x=leisureactsreclass,y=overlay_obj1)
+overlay_obj4<-resample(x=overlay_obj4,y=overlay_obj1)
+fuzzyoverlay_obj1<-resample(x=fuzzyoverlay_obj1,y=overlay_obj1)
+fuzzyoverlay_obj2<-resample(x=fuzzyoverlay_obj2,y=overlay_obj1)
+srp_leisure_averse<-resample(x=srp_leisure_averse,y=overlay_obj1)
+fuzzyoverlay_obj4<-resample(x=fuzzyoverlay_obj4,y=overlay_obj1)
+
+extent(overlay_obj1)
+extent(overlay_obj2)
+extent(leisureactsreclass)
+extent(overlay_obj4)
+
+extent(overlay_ALL)
+extent(overlay_ALL_fuzzy)
+
+```
+## Overlay operations
+```{r overall overlay}
+overlay_ALL<-overlay_obj1+overlay_obj2+overlay_obj4+leisureactsreclass
+overlay_ALL_fuzzy<-fuzzyoverlay_obj1+fuzzyoverlay_obj2+srp_leisure_averse+fuzzyoverlay_obj4
+
+extent(overlay_ALL)
+extent(overlay_ALL_fuzzy)
+
+difference_all<- overlay_ALL-overlay_ALL_fuzzy
+overlays_ALL<-stack(overlay_ALL,overlay_ALL_fuzzy)
+
+# max and min of the stack
+max_r  <- maxValue(overlays_ALL)[[1]] # max of raster stack: legend upper limit
+min_r  <- minValue(overlays_ALL)[[1]] # min of raster Stack: legend lower limit
+breaks <- (max_r - min_r)/15 # increase denominator for more breaks
+lab    <- seq(0, (max_r+1), by = breaks) # create the vector of legend breaks
+
+
+overall_classoverlaymap<-tm_shape(overlay_ALL)+tm_raster(legend.show=T,legend.reverse=T,title="Overlay fisheries layers (objective 2)",breaks=lab)+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette=list(seq= "YlOrBr"))
+
+fuzzyoverlay_allmap<-tm_shape(overlay_ALL_fuzzy)+tm_raster(legend.show=T,legend.reverse=T,title="Fuzzy overlay fisheries layers (objective 2)",breaks=lab)+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette=list(seq= "YlOrBr"))
+
+difference_all<-tm_shape(difference_all)+tm_raster(legend.show=T,legend.reverse=T,title="Difference between overlay")+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T)
+
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(1,3)))
+
+print(overall_classoverlaymap,vp=viewport(layout.pos.row=1,layout.pos.col=1))
+print(fuzzyoverlay_allmap,vp=viewport(layout.pos.row=1,layout.pos.col=2))
+print(difference_all,vp=viewport(layout.pos.row=1,layout.pos.col=3))
+```
+## Calculate area
+```{r transform overlays to calculate area}
+crs(overlay_ALL)
+crs(overlay_ALL_fuzzy)
+
+overlay_ALL_proj<-projectRaster(overlay_ALL, crs="+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +units=m +no_defs")
+overlay_ALL_fuzzy_proj<-projectRaster(overlay_ALL_fuzzy, crs="+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +units=m +no_defs")
+
+res(overlay_ALL_proj)
+res(overlay_ALL_fuzzy_proj)
+
+writeRaster(overlay_ALL_proj,'classoverlay.tif')
+writeRaster(overlay_ALL_fuzzy_proj,'fuzzyoverlay.tif')
+```
+
+##read areas
+```{r reading rasters}
+fuzzychosenarea<-raster("suitablearea_fuzzy1.tif")
+classchosenarea<-raster("suitablearea_class1.tif")
+dpos<-st_read("WORK_IN_PROGRESS_Sectoral_Marine _Plan_revised_AoS_20190129.shp")
+```
+
+##crs areas
+```{r crs areas}
+crs(fuzzychosenarea)
+crs(classchosenarea)
+crs(dpos)
+fuzzychosenarea_deproj<-projectRaster(fuzzychosenarea, crs="+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+classchosenarea_deproj<-projectRaster(classchosenarea, crs="+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0")
+difference_areas<-fuzzychosenarea_deproj-classchosenarea_deproj
+
+fuzzychosenarea_deprojNA20<-fuzzychosenarea_deproj
+fuzzychosenarea_deprojNA20[is.na(fuzzychosenarea_deprojNA20)]<-0
+
+classchosenarea_deprojNA20<-classchosenarea_deproj
+classchosenarea_deprojNA20[is.na(classchosenarea_deprojNA20)]<-0
+
+difference_areas<-fuzzychosenarea_deprojNA20-classchosenarea_deprojNA20
+
+tm_shape(difference_areas)+tm_raster(style="cont")
+
+crs(fuzzychosenarea_deproj)
+crs(classchosenarea_deproj)
+```
+
+```{r mapping onto overlay}
+
+overall_classoverlaymap_area<-tm_shape(overlay_ALL)+tm_raster(legend.show=T,legend.reverse=T,title="Overlay fisheries layers (objective 2)",breaks=lab)+tm_layout(legend.outside=T,aes.palette=list(seq= "YlOrBr"))+tm_shape(classchosenarea_deproj)+tm_raster(palette=green2red(255))+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")
+
+fuzzyoverlay_allmap_area<-tm_shape(overlay_ALL_fuzzy)+tm_raster(legend.show=T,legend.reverse=T,title="Fuzzy overlay fisheries layers (objective 2)",breaks=lab)+tm_layout(legend.outside=T,aes.palette=list(seq= "YlOrBr"))+tm_shape(fuzzychosenarea_deproj)+tm_raster(palette=green2red(255))+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")
+
+dpo_map<-tm_shape(overlay_ALL)+tm_raster(legend.show=T,legend.reverse=T,title="Overlay fisheries layers (objective 2)",breaks=lab)+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T,aes.palette=list(seq= "YlOrBr"))+tm_shape(dpos)+tm_polygons()
+
+differencemap_areas<-tm_shape(difference_areas)+tm_raster(style="cont")+tm_shape(northcoast.sf)+tm_polygons(col="grey",border.col="black")+tm_layout(legend.outside=T)
+
+grid.newpage()
+pushViewport(viewport(layout=grid.layout(2,3)))
+
+print(overall_classoverlaymap_area,vp=viewport(layout.pos.row=1,layout.pos.col=1))
+print(fuzzyoverlay_allmap_area,vp=viewport(layout.pos.row=1,layout.pos.col=2))
+print(dpo_map,vp=viewport(layout.pos.row=1,layout.pos.col=3))
+print(differencemap_areas,vp=viewport(layout.pos.row=2,layout.pos.col=2))
+```
